@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <DirectXMath.h>
 #include <d3dcompiler.h>
+#include <WICTextureLoader.h>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
@@ -147,6 +148,12 @@ XMMATRIX Scale;
 XMMATRIX Translation;
 float Rot = 0.01f;
 
+// Holds our texture we load
+ID3D11ShaderResourceView *CubeTexture;
+
+// Holds the sampler state info
+ID3D11SamplerState *CubeTextureSamplerState;
+
 // Defines our constant buffer in code is the same layout of the structure of the buffer in the effect file
 struct cbPerObject
 {
@@ -176,12 +183,12 @@ struct Vertex
 {
 	Vertex() { }
 	Vertex(float x, float y, float z, 
-		   float cr, float cg, float cb, float ca) : 
+		   float u, float v) : 
 		pos(x, y, z),
-		color(cr, cg, cb, ca) { }
+		texCoord(u, v) { }
 
 	DirectX::XMFLOAT3 pos;
-	DirectX::XMFLOAT4 color;
+	DirectX::XMFLOAT2 texCoord;
 };
 
 // Tells us what our Vertex structure consists of and what to do with each component of our Vertex structure
@@ -190,7 +197,7 @@ struct Vertex
 D3D11_INPUT_ELEMENT_DESC Layout[] = 
 {
 	{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-	{ "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 }
+	{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 }
 };
 
 UINT NumLayoutElements = ARRAYSIZE(Layout);
@@ -434,42 +441,69 @@ bool InitScene()
 	// Where the points meet
 	Vertex Vertices[] =
 	{
-		Vertex(-1.0f, -1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f),
-		Vertex(-1.0f, +1.0f, -1.0f, 0.0f, 1.0f, 0.0f, 1.0f),
-		Vertex(+1.0f, +1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f),
-		Vertex(+1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 0.0f, 1.0f),
-		Vertex(-1.0f, -1.0f, +1.0f, 0.0f, 1.0f, 1.0f, 1.0f),
-		Vertex(-1.0f, +1.0f, +1.0f, 1.0f, 1.0f, 1.0f, 1.0f),
-		Vertex(+1.0f, +1.0f, +1.0f, 1.0f, 0.0f, 1.0f, 1.0f),
-		Vertex(+1.0f, -1.0f, +1.0f, 1.0f, 0.0f, 0.0f, 1.0f),
+		// Front Face
+		Vertex(-1.0f, -1.0f, -1.0f, 0.0f, 1.0f),
+		Vertex(-1.0f,  1.0f, -1.0f, 0.0f, 0.0f),
+		Vertex(1.0f,  1.0f, -1.0f, 1.0f, 0.0f),
+		Vertex(1.0f, -1.0f, -1.0f, 1.0f, 1.0f),
+
+		// Back Face
+		Vertex(-1.0f, -1.0f, 1.0f, 1.0f, 1.0f),
+		Vertex(1.0f, -1.0f, 1.0f, 0.0f, 1.0f),
+		Vertex(1.0f,  1.0f, 1.0f, 0.0f, 0.0f),
+		Vertex(-1.0f,  1.0f, 1.0f, 1.0f, 0.0f),
+
+		// Top Face
+		Vertex(-1.0f, 1.0f, -1.0f, 0.0f, 1.0f),
+		Vertex(-1.0f, 1.0f,  1.0f, 0.0f, 0.0f),
+		Vertex(1.0f, 1.0f,  1.0f, 1.0f, 0.0f),
+		Vertex(1.0f, 1.0f, -1.0f, 1.0f, 1.0f),
+
+		// Bottom Face
+		Vertex(-1.0f, -1.0f, -1.0f, 1.0f, 1.0f),
+		Vertex(1.0f, -1.0f, -1.0f, 0.0f, 1.0f),
+		Vertex(1.0f, -1.0f,  1.0f, 0.0f, 0.0f),
+		Vertex(-1.0f, -1.0f,  1.0f, 1.0f, 0.0f),
+
+		// Left Face
+		Vertex(-1.0f, -1.0f,  1.0f, 0.0f, 1.0f),
+		Vertex(-1.0f,  1.0f,  1.0f, 0.0f, 0.0f),
+		Vertex(-1.0f,  1.0f, -1.0f, 1.0f, 0.0f),
+		Vertex(-1.0f, -1.0f, -1.0f, 1.0f, 1.0f),
+
+		// Right Face
+		Vertex(1.0f, -1.0f, -1.0f, 0.0f, 1.0f),
+		Vertex(1.0f,  1.0f, -1.0f, 0.0f, 0.0f),
+		Vertex(1.0f,  1.0f,  1.0f, 1.0f, 0.0f),
+		Vertex(1.0f, -1.0f,  1.0f, 1.0f, 1.0f),
 	};
 
 	// Allows to use part of another triangle to use on another
 	DWORD Indices[] =
 	{
-		// front face
-		0, 1, 2,
-		0, 2, 3,
+		// Front Face
+		0,  1,  2,
+		0,  2,  3,
 
-		// back face
-		4, 6, 5,
-		4, 7, 6,
+		// Back Face
+		4,  5,  6,
+		4,  6,  7,
 
-		// left face
-		4, 5, 1,
-		4, 1, 0,
+		// Top Face
+		8,  9, 10,
+		8, 10, 11,
 
-		// right face
-		3, 2, 6,
-		3, 6, 7,
+		// Bottom Face
+		12, 13, 14,
+		12, 14, 15,
 
-		// top face
-		1, 5, 6,
-		1, 6, 2,
+		// Left Face
+		16, 17, 18,
+		16, 18, 19,
 
-		// bottom face
-		4, 0, 3,
-		4, 3, 7
+		// Right Face
+		20, 21, 22,
+		20, 22, 23
 	};
 
 	// Describe our Index Buffer
@@ -488,7 +522,7 @@ bool InitScene()
 
 	// Describe our Vertex Buffer
 	D3D11_BUFFER_DESC VertexBufferDesc = {};
-	VertexBufferDesc.ByteWidth = sizeof(Vertex) * 8;
+	VertexBufferDesc.ByteWidth = sizeof(Vertex) * 24;
 	VertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
 	VertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
 
@@ -544,12 +578,28 @@ bool InitScene()
 
 	// Setup the Rasterizer for Wireframe
 	D3D11_RASTERIZER_DESC RasterizerDesc = {};
-	RasterizerDesc.FillMode = D3D11_FILL_WIREFRAME;
+	RasterizerDesc.FillMode = D3D11_FILL_SOLID;
 	RasterizerDesc.CullMode = D3D11_CULL_NONE;
 
 	HR(D3D11Device->CreateRasterizerState(&RasterizerDesc, &WireFrameState));
 
 	D3D11DeviceContext->RSSetState(WireFrameState);
+
+	// Load Texture File
+	HR(CreateWICTextureFromFile(D3D11Device, L"test.png", NULL, &CubeTexture));
+
+	// Describe Sample State (How the shader will render the texture)
+	D3D11_SAMPLER_DESC SamplerDesc = {};
+	SamplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+	SamplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+	SamplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+	SamplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+	SamplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+	SamplerDesc.MinLOD = 0;
+	SamplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+
+	// Create the Sampler
+	HR(D3D11Device->CreateSamplerState(&SamplerDesc, &CubeTextureSamplerState));
 
 	return true;
 }
@@ -578,7 +628,7 @@ void UpdateScene()
 void DrawScene()
 {
 	// Clear backbuffer
-	FLOAT bgColor[4] = { Red, Green, Blue, 1.0f };
+	FLOAT bgColor[4] = { Red, Green, Blue, 0.0f };
 	D3D11DeviceContext->ClearRenderTargetView(RenderTargetView, bgColor);
 
 	// Clear the Depth/Stencil View
@@ -593,6 +643,10 @@ void DrawScene()
 	D3D11DeviceContext->UpdateSubresource(cbPerObjectBuffer, 0, NULL, &cbPerObj, 0, 0);
 	// Set the Vertex Shader Constant buffer to ours
 	D3D11DeviceContext->VSSetConstantBuffers(0, 1, &cbPerObjectBuffer);
+
+	D3D11DeviceContext->PSSetShaderResources(0, 1, &CubeTexture);
+	D3D11DeviceContext->PSSetSamplers(0, 1, &CubeTextureSamplerState);
+
 	// Draw our cube (indexed)
 	D3D11DeviceContext->DrawIndexed(36, 0, 0);
 
@@ -602,6 +656,10 @@ void DrawScene()
 	D3D11DeviceContext->UpdateSubresource(cbPerObjectBuffer, 0, NULL, &cbPerObj, 0, 0);
 	// Set the Vertex Shader Constant buffer to ours
 	D3D11DeviceContext->VSSetConstantBuffers(0, 1, &cbPerObjectBuffer);
+
+	D3D11DeviceContext->PSSetShaderResources(0, 1, &CubeTexture);
+	D3D11DeviceContext->PSSetSamplers(0, 1, &CubeTextureSamplerState);
+
 	// Draw our cube (indexed)
 	D3D11DeviceContext->DrawIndexed(36, 0, 0);
 
