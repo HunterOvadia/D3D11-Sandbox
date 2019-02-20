@@ -135,6 +135,15 @@ XMVECTOR CameraPosition;
 XMVECTOR CameraTarget;
 XMVECTOR CameraUp;
 
+
+XMMATRIX Cube1World;
+XMMATRIX Cube2World;
+
+XMMATRIX Rotation;
+XMMATRIX Scale;
+XMMATRIX Translation;
+float Rot = 0.01f;
+
 // Defines our constant buffer in code is the same layout of the structure of the buffer in the effect file
 struct cbPerObject
 {
@@ -421,22 +430,47 @@ bool InitScene()
 	// Where the points meet
 	Vertex Vertices[] =
 	{
-		Vertex(-0.5f, -0.5f, 0.5f, 1.0f, 0.0f, 0.0f, 1.0f),
-		Vertex(-0.5f,  0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f),
-		Vertex(0.5f,  0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f),
-		Vertex(0.5f, -0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f),
+		Vertex(-1.0f, -1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f),
+		Vertex(-1.0f, +1.0f, -1.0f, 0.0f, 1.0f, 0.0f, 1.0f),
+		Vertex(+1.0f, +1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f),
+		Vertex(+1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 0.0f, 1.0f),
+		Vertex(-1.0f, -1.0f, +1.0f, 0.0f, 1.0f, 1.0f, 1.0f),
+		Vertex(-1.0f, +1.0f, +1.0f, 1.0f, 1.0f, 1.0f, 1.0f),
+		Vertex(+1.0f, +1.0f, +1.0f, 1.0f, 0.0f, 1.0f, 1.0f),
+		Vertex(+1.0f, -1.0f, +1.0f, 1.0f, 0.0f, 0.0f, 1.0f),
 	};
 
 	// Allows to use part of another triangle to use on another
 	DWORD Indices[] =
 	{
+		// front face
 		0, 1, 2,
-		0, 2, 3
+		0, 2, 3,
+
+		// back face
+		4, 6, 5,
+		4, 7, 6,
+
+		// left face
+		4, 5, 1,
+		4, 1, 0,
+
+		// right face
+		3, 2, 6,
+		3, 6, 7,
+
+		// top face
+		1, 5, 6,
+		1, 6, 2,
+
+		// bottom face
+		4, 0, 3,
+		4, 3, 7
 	};
 
 	// Describe our Index Buffer
 	D3D11_BUFFER_DESC IndexBufferDesc = {};
-	IndexBufferDesc.ByteWidth = sizeof(DWORD) * 2 * 3;
+	IndexBufferDesc.ByteWidth = sizeof(DWORD) * 12 * 3;
 	IndexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
 	IndexBufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
 
@@ -450,7 +484,7 @@ bool InitScene()
 
 	// Describe our Vertex Buffer
 	D3D11_BUFFER_DESC VertexBufferDesc = {};
-	VertexBufferDesc.ByteWidth = sizeof(Vertex) * 4;
+	VertexBufferDesc.ByteWidth = sizeof(Vertex) * 8;
 	VertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
 	VertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
 
@@ -494,7 +528,7 @@ bool InitScene()
 	HR(D3D11Device->CreateBuffer(&ConstantBufferDesc, 0, &cbPerObjectBuffer));
 
 	// Setup Camera
-	CameraPosition = XMVectorSet(0.0f, 0.0f, -0.5f, 0.0f);
+	CameraPosition = XMVectorSet(0.0f, 3.0f, -8.0f, 0.0f);
 	CameraTarget = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
 	CameraUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
@@ -509,7 +543,22 @@ bool InitScene()
 
 void UpdateScene()
 {
+	Rot += .0005f;
+	if (Rot > 6.28f) // 2pi
+		Rot = 0.0f;
 
+	Cube1World = XMMatrixIdentity();
+
+	// Cube1 World Space Matrix
+	XMVECTOR rotAxis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+	Rotation = XMMatrixRotationAxis(rotAxis, Rot);
+	Translation = XMMatrixTranslation(0.0f, 0.0f, 4.0f);
+	Cube1World = Translation * Rotation;
+
+	Cube2World = XMMatrixIdentity();
+	Rotation = XMMatrixRotationAxis(rotAxis, -Rot);
+	Scale = XMMatrixScaling(1.3f, 1.3f, 1.3f);
+	Cube2World = Rotation * Scale;
 }
 
 void DrawScene()
@@ -522,21 +571,26 @@ void DrawScene()
 	D3D11DeviceContext->ClearDepthStencilView(DepthStencilView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 
 	// Create the WVP Matrix
-	World = XMMatrixIdentity();
-	WVP = World * CameraView * CameraProjection;
-
+	WVP = Cube1World * CameraView * CameraProjection;
 	// Update the Constant Buffer
 	// Need to Transpose (swap rows and columns), when sending them to Effect files
 	cbPerObj.WVP = XMMatrixTranspose(WVP);
-
 	// Update the effects file constant buffer with ours so they match
 	D3D11DeviceContext->UpdateSubresource(cbPerObjectBuffer, 0, NULL, &cbPerObj, 0, 0);
-
 	// Set the Vertex Shader Constant buffer to ours
 	D3D11DeviceContext->VSSetConstantBuffers(0, 1, &cbPerObjectBuffer);
+	// Draw our cube (indexed)
+	D3D11DeviceContext->DrawIndexed(36, 0, 0);
 
-	// Draw our square (indexed)
-	D3D11DeviceContext->DrawIndexed(6, 0, 0);
+	WVP = Cube2World * CameraView * CameraProjection;
+	cbPerObj.WVP = XMMatrixTranspose(WVP);
+	// Update the effects file constant buffer with ours so they match
+	D3D11DeviceContext->UpdateSubresource(cbPerObjectBuffer, 0, NULL, &cbPerObj, 0, 0);
+	// Set the Vertex Shader Constant buffer to ours
+	D3D11DeviceContext->VSSetConstantBuffers(0, 1, &cbPerObjectBuffer);
+	// Draw our cube (indexed)
+	D3D11DeviceContext->DrawIndexed(36, 0, 0);
+
 
 	// Swap the front buffer with the backbuffer
 	SwapChain->Present(0, 0);
