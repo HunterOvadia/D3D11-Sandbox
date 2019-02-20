@@ -121,6 +121,9 @@ ID3D11InputLayout *VertexLayout;
 ID3D11DepthStencilView *DepthStencilView;
 ID3D11Texture2D *DepthStencilBuffer;
 
+// Set the Render state of the RS stage of Pipeline
+ID3D11RasterizerState *WireFrameState;
+
 
 // Stores the constant buffer variables in our World View Projection Matrix to send to the Effect file
 ID3D11Buffer *cbPerObjectBuffer;
@@ -411,6 +414,7 @@ void ReleaseObjects()
 	DepthStencilView->Release();
 	DepthStencilBuffer->Release();
 	cbPerObjectBuffer->Release();
+	WireFrameState->Release();
 }
 
 bool InitScene()
@@ -538,6 +542,15 @@ bool InitScene()
 	// Create projection space
 	CameraProjection = XMMatrixPerspectiveFovLH((0.4f * 3.14f), (float)Width / Height, 1.0f, 1000.0f);
 
+	// Setup the Rasterizer for Wireframe
+	D3D11_RASTERIZER_DESC RasterizerDesc = {};
+	RasterizerDesc.FillMode = D3D11_FILL_WIREFRAME;
+	RasterizerDesc.CullMode = D3D11_CULL_NONE;
+
+	HR(D3D11Device->CreateRasterizerState(&RasterizerDesc, &WireFrameState));
+
+	D3D11DeviceContext->RSSetState(WireFrameState);
+
 	return true;
 }
 
@@ -548,6 +561,7 @@ void UpdateScene()
 		Rot = 0.0f;
 
 	Cube1World = XMMatrixIdentity();
+
 
 	// Cube1 World Space Matrix
 	XMVECTOR rotAxis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
