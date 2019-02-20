@@ -134,9 +134,13 @@ void DrawScene();
 struct Vertex
 {
 	Vertex() { }
-	Vertex(float x, float y, float z) : pos(x, y, z) { }
+	Vertex(float x, float y, float z, 
+		   float cr, float cg, float cb, float ca) : 
+		pos(x, y, z),
+		color(cr, cg, cb, ca) { }
 
 	DirectX::XMFLOAT3 pos;
+	DirectX::XMFLOAT4 color;
 };
 
 // Tells us what our Vertex structure consists of and what to do with each component of our Vertex structure
@@ -145,7 +149,9 @@ struct Vertex
 D3D11_INPUT_ELEMENT_DESC Layout[] = 
 {
 	{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+	{ "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 }
 };
+
 UINT NumLayoutElements = ARRAYSIZE(Layout);
 
 //////////////////////////////////////////////////////////////
@@ -364,9 +370,9 @@ bool InitScene()
 
 	Vertex Vertices[] =
 	{
-		Vertex(0.0f, 0.5f, 0.5f),
-		Vertex(0.5f, -0.5f, 0.5f),
-		Vertex(-0.5f, -0.5f, 0.5f),
+		Vertex(0.0f, 0.5f, 0.5f, 1.0f, 0.0f, 0.0f, 1.0f),
+		Vertex(0.5f, -0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f),
+		Vertex(-0.5f, -0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f),
 	};
 
 	// Describe our Vertex Buffer
