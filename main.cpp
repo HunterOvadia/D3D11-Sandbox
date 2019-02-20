@@ -17,6 +17,7 @@
 #endif
 #endif
 
+using namespace DirectX;
 
 // Window Information
 //////////////////////////////////////////////////////////////
@@ -119,6 +120,27 @@ ID3D11InputLayout *VertexLayout;
 // Stores the Depth Stencil View and Buffer
 ID3D11DepthStencilView *DepthStencilView;
 ID3D11Texture2D *DepthStencilBuffer;
+
+
+// Stores the constant buffer variables in our World View Projection Matrix to send to the Effect file
+ID3D11Buffer *cbPerObjectBuffer;
+
+// Matrices and Vectors of each space and the position, target, and direction of camera
+XMMATRIX WVP;
+XMMATRIX World;
+XMMATRIX CameraView;
+XMMATRIX CameraProjection;
+
+XMVECTOR CameraPosition;
+XMVECTOR CameraTarget;
+XMVECTOR CameraUp;
+
+// Defines our constant buffer in code is the same layout of the structure of the buffer in the effect file
+struct cbPerObject
+{
+	XMMATRIX WVP;
+};
+cbPerObject cbPerObj;
 
 float Red = 0.0f;
 float Green = 0.0f;
@@ -379,6 +401,7 @@ void ReleaseObjects()
 	VertexLayout->Release();
 	DepthStencilView->Release();
 	DepthStencilBuffer->Release();
+	cbPerObjectBuffer->Release();
 }
 
 bool InitScene()
@@ -464,6 +487,23 @@ bool InitScene()
 
 	D3D11DeviceContext->RSSetViewports(1, &Viewport);
 
+	// Create Constant Buffer
+	D3D11_BUFFER_DESC ConstantBufferDesc = {};
+	ConstantBufferDesc.ByteWidth = sizeof(cbPerObject);
+	ConstantBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+	HR(D3D11Device->CreateBuffer(&ConstantBufferDesc, 0, &cbPerObjectBuffer));
+
+	// Setup Camera
+	CameraPosition = XMVectorSet(0.0f, 0.0f, -0.5f, 0.0f);
+	CameraTarget = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
+	CameraUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+	// Create the Viewspace
+	CameraView = XMMatrixLookAtLH(CameraPosition, CameraTarget, CameraUp);
+	
+	// Create projection space
+	CameraProjection = XMMatrixPerspectiveFovLH((0.4f * 3.14f), (float)Width / Height, 1.0f, 1000.0f);
+
 	return true;
 }
 
@@ -480,6 +520,20 @@ void DrawScene()
 
 	// Clear the Depth/Stencil View
 	D3D11DeviceContext->ClearDepthStencilView(DepthStencilView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
+
+	// Create the WVP Matrix
+	World = XMMatrixIdentity();
+	WVP = World * CameraView * CameraProjection;
+
+	// Update the Constant Buffer
+	// Need to Transpose (swap rows and columns), when sending them to Effect files
+	cbPerObj.WVP = XMMatrixTranspose(WVP);
+
+	// Update the effects file constant buffer with ours so they match
+	D3D11DeviceContext->UpdateSubresource(cbPerObjectBuffer, 0, NULL, &cbPerObj, 0, 0);
+
+	// Set the Vertex Shader Constant buffer to ours
+	D3D11DeviceContext->VSSetConstantBuffers(0, 1, &cbPerObjectBuffer);
 
 	// Draw our square (indexed)
 	D3D11DeviceContext->DrawIndexed(6, 0, 0);
