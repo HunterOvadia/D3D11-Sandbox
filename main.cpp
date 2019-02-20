@@ -1,8 +1,11 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <stdio.h>
+#include <DirectXMath.h>
+#include <d3dcompiler.h>
 
 #pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "d3dcompiler.lib")
 
 #if defined(DEBUG) | defined(_DEBUG)
 #ifndef HR
@@ -31,6 +34,57 @@ LRESULT CALLBACK WindowProcedure(HWND Window, UINT Msg, WPARAM WParam, LPARAM LP
 
 // DirectX Information
 //////////////////////////////////////////////////////////////
+
+// DirectX Rendering Pipeline
+/*
+	1. Input Assembler (IA) Stage
+		- Reads Geometric Data, Vertices, and Indices.
+		- Uses the data to create Geometric Primitives like Triangles, Squares, Lines, Points, which will be used by other stages.
+		- Indices define how the Primitives should be put together by the Vertices.
+
+	2. Vertex Shader (VS) Stage*
+		- Where all the vertices go through after the primitives have been assembled.
+		- Every vertex drawn will go through here. With the VS, we can do  things like Transforms, Scales, Lighting, Displacement Mapping for Textures, etc.
+		- Shaders are written in HLSL.
+
+	These next 3 stages work together to implement Tesselation.
+	Tesselation is traking a primitive object and dividing it into many smaller sections to increase the models detail really fast.
+
+	3. Hull Shader (HS) Stage*
+		- Calculates how and where to add new vertices to a primitive to make it more detailed.
+
+	4. Tesselator Shader (TS) Stage
+		- Takes input from HS, and does the dividing of the primitive.
+
+	5. Domain Shader (DS) Stage*
+		- Takes positions of new vertices, and transforms them to create more detail.
+
+	6. Geometry Shader (GS) Stage*
+		- (Optional Stage)
+		- Accepts primitives as input, to create or destroy primitives.
+
+	7. Stream Output (SO) Stage
+		- Obtains Vertex Data from the pipeline from GS or VS. 
+		- Vertex Data is sent to memory from the SO to be put into one or more Vertex Buffers.
+		- Vertex Data output are sent as Lists. Incompletes are never sent out. Silently discarded.
+
+	8. Rasterizer (RS) Stage
+		- Takes the Vector Information (Shapes and Primitives) and turns them into pixels by Interpolating per-vertex values across each primitive.
+		- Also handles Clipping (cutting primitives outside the view of the screen) with the Viewport
+
+	9. Pixel Shader (PS) Stage*
+		- Does calculations and modifies each pixel that will be seen on the screen, such as lighting on a per pixel basis.
+		- Invoked by the RS once per primitive per pixel. 
+		- 1:1 Mapping on a pixel
+		- Calculate the final color of each pixel.
+
+	10. Output Merger (OM) Stage
+		- Final stage.
+		- Takes the pixel fragments and depth/stencil buffers and determines which are actually written to the RenderTarget.
+
+	Stages with * are programmable and created by us. The ones without, we do not program, but can change its settings via the Device Context.
+*/
+
 // SwapChain: Used to change the backbuffer <-> front buffer. (Double Buffering to prevent scanlines/tearing)
 IDXGISwapChain *SwapChain;
 
@@ -47,12 +101,26 @@ ID3D11DeviceContext *D3D11DeviceContext;
 // This texture is sent to the output merger state of the pipeline as our Render Target and is rendered to the screen.
 ID3D11RenderTargetView *RenderTargetView;
 
+// Buffer to hold our vertex data
+ID3D11Buffer *TriangleVertBuffer;
+ID3D11VertexShader *VertexShader;
+ID3D11PixelShader *PixelShader;
+
+// Holds the information fromn our shaders
+ID3D10Blob *VSBuffer;
+ID3D10Blob *PSBuffer;
+
+// Input (Vertex) Layout
+ID3D11InputLayout *VertexLayout;
+
 float Red = 0.0f;
 float Green = 0.0f;
 float Blue = 0.0f;
 int ColorModR = 1;
 int ColorModG = 1;
 int ColorModB = 1;
+
+
 
 // Initializes D3D
 bool InitializeD3D(HINSTANCE Instance);
@@ -62,6 +130,23 @@ void ReleaseObjects();
 bool InitScene();
 void UpdateScene();
 void DrawScene();
+
+struct Vertex
+{
+	Vertex() { }
+	Vertex(float x, float y, float z) : pos(x, y, z) { }
+
+	DirectX::XMFLOAT3 pos;
+};
+
+// Tells us what our Vertex structure consists of and what to do with each component of our Vertex structure
+// Each element describes one element in the vertex structure.
+// If we added a color, we would have a color below as well as position.
+D3D11_INPUT_ELEMENT_DESC Layout[] = 
+{
+	{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+};
+UINT NumLayoutElements = ARRAYSIZE(Layout);
 
 //////////////////////////////////////////////////////////////
 
@@ -254,10 +339,72 @@ void ReleaseObjects()
 	SwapChain->Release();
 	D3D11Device->Release();
 	D3D11DeviceContext->Release();
+	RenderTargetView->Release();
+	TriangleVertBuffer->Release();
+	VertexShader->Release();
+	PixelShader->Release();
+	VSBuffer->Release();
+	PSBuffer->Release();
+	VertexLayout->Release();
 }
 
 bool InitScene()
 {
+	// Compile Shaders From File
+	HR(D3DCompileFromFile(L"Effects.fx", 0, 0, "VS", "vs_5_0", 0, 0, &VSBuffer, 0));
+	HR(D3DCompileFromFile(L"Effects.fx", 0, 0, "PS", "ps_5_0", 0, 0, &PSBuffer, 0));
+
+	// Create the Shader object
+	HR(D3D11Device->CreateVertexShader(VSBuffer->GetBufferPointer(), VSBuffer->GetBufferSize(), 0, &VertexShader));
+	HR(D3D11Device->CreatePixelShader(PSBuffer->GetBufferPointer(), PSBuffer->GetBufferSize(), 0, &PixelShader));
+
+	// Now that the shaders are compiled and created, need to set them as our Pipelines current shader.
+	D3D11DeviceContext->VSSetShader(VertexShader, 0, 0);
+	D3D11DeviceContext->PSSetShader(PixelShader, 0, 0);
+
+	Vertex Vertices[] =
+	{
+		Vertex(0.0f, 0.5f, 0.5f),
+		Vertex(0.5f, -0.5f, 0.5f),
+		Vertex(-0.5f, -0.5f, 0.5f),
+	};
+
+	// Describe our Vertex Buffer
+	D3D11_BUFFER_DESC VertexBufferDesc = {};
+	VertexBufferDesc.ByteWidth = sizeof(Vertex) * 3;
+	VertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+	VertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+	// Data we want in our buffer
+	D3D11_SUBRESOURCE_DATA VertexBufferData = {};
+	// The data we want in our buffer
+	VertexBufferData.pSysMem = Vertices;
+	HR(D3D11Device->CreateBuffer(&VertexBufferDesc, &VertexBufferData, &TriangleVertBuffer));
+
+	// Now we need to bind our Vertex Buffer to the IA (first stage)
+	UINT Stride = sizeof(Vertex);
+	UINT Offset = 0;
+	D3D11DeviceContext->IASetVertexBuffers(0, 1, &TriangleVertBuffer, &Stride, &Offset);
+
+	// Create the Input Layout
+	HR(D3D11Device->CreateInputLayout(Layout, NumLayoutElements, VSBuffer->GetBufferPointer(), VSBuffer->GetBufferSize(), &VertexLayout));
+	// Bind the Layout to the IA as the Active Layout.
+	D3D11DeviceContext->IASetInputLayout(VertexLayout);
+
+	// Set the Primitive Topology of the IA
+	// Create a triangle; Every 3 vertices will make a triangle. 
+	D3D11DeviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+	// Create and set our viewport.
+	// Tells the RS stage what to draw.
+	// Creates a square in pixels which the rasterizer uses to find where to display our geometry on the client area of our window.
+	D3D11_VIEWPORT Viewport = {};
+	Viewport.TopLeftX = 0;
+	Viewport.TopLeftY = 0;
+	Viewport.Width = Width;
+	Viewport.Height = Height;
+
+	D3D11DeviceContext->RSSetViewports(1, &Viewport);
+
 	return true;
 }
 
@@ -280,6 +427,8 @@ void DrawScene()
 	// Clear backbuffer
 	FLOAT bgColor[4] = { Red, Green, Blue, 1.0f };
 	D3D11DeviceContext->ClearRenderTargetView(RenderTargetView, bgColor);
+
+	D3D11DeviceContext->Draw(3, 0);
 
 	// Swap the front buffer with the backbuffer
 	SwapChain->Present(0, 0);
