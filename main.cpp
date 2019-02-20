@@ -102,11 +102,14 @@ ID3D11DeviceContext *D3D11DeviceContext;
 ID3D11RenderTargetView *RenderTargetView;
 
 // Buffer to hold our vertex data
-ID3D11Buffer *TriangleVertBuffer;
+ID3D11Buffer *SquareVertexBuffer;
 ID3D11VertexShader *VertexShader;
 ID3D11PixelShader *PixelShader;
 
-// Holds the information fromn our shaders
+// Holds data of our indices
+ID3D11Buffer *SquareIndexBuffer;
+
+// Holds the information from our shaders
 ID3D10Blob *VSBuffer;
 ID3D10Blob *PSBuffer;
 
@@ -346,7 +349,8 @@ void ReleaseObjects()
 	D3D11Device->Release();
 	D3D11DeviceContext->Release();
 	RenderTargetView->Release();
-	TriangleVertBuffer->Release();
+	SquareVertexBuffer->Release();
+	SquareIndexBuffer->Release();
 	VertexShader->Release();
 	PixelShader->Release();
 	VSBuffer->Release();
@@ -368,28 +372,52 @@ bool InitScene()
 	D3D11DeviceContext->VSSetShader(VertexShader, 0, 0);
 	D3D11DeviceContext->PSSetShader(PixelShader, 0, 0);
 
+	// Where the points meet
 	Vertex Vertices[] =
 	{
-		Vertex(0.0f, 0.5f, 0.5f, 1.0f, 0.0f, 0.0f, 1.0f),
+		Vertex(-0.5f, -0.5f, 0.5f, 1.0f, 0.0f, 0.0f, 1.0f),
+		Vertex(-0.5f,  0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f),
+		Vertex(0.5f,  0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f),
 		Vertex(0.5f, -0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f),
-		Vertex(-0.5f, -0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f),
 	};
+
+	// Allows to use part of another triangle to use on another
+	DWORD Indices[] =
+	{
+		0, 1, 2,
+		0, 2, 3
+	};
+
+	// Describe our Index Buffer
+	D3D11_BUFFER_DESC IndexBufferDesc = {};
+	IndexBufferDesc.ByteWidth = sizeof(DWORD) * 2 * 3;
+	IndexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+	IndexBufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+
+	D3D11_SUBRESOURCE_DATA IndexBufferData = {};
+	// The data we want in our buffer
+	IndexBufferData.pSysMem = Indices;
+	HR(D3D11Device->CreateBuffer(&IndexBufferDesc, &IndexBufferData, &SquareIndexBuffer));
+
+	// Bind the Index Buffer in the IA (first stage)
+	D3D11DeviceContext->IASetIndexBuffer(SquareIndexBuffer, DXGI_FORMAT_R32_UINT, 0);
 
 	// Describe our Vertex Buffer
 	D3D11_BUFFER_DESC VertexBufferDesc = {};
-	VertexBufferDesc.ByteWidth = sizeof(Vertex) * 3;
+	VertexBufferDesc.ByteWidth = sizeof(Vertex) * 4;
 	VertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
 	VertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+
 	// Data we want in our buffer
 	D3D11_SUBRESOURCE_DATA VertexBufferData = {};
 	// The data we want in our buffer
 	VertexBufferData.pSysMem = Vertices;
-	HR(D3D11Device->CreateBuffer(&VertexBufferDesc, &VertexBufferData, &TriangleVertBuffer));
+	HR(D3D11Device->CreateBuffer(&VertexBufferDesc, &VertexBufferData, &SquareVertexBuffer));
 
 	// Now we need to bind our Vertex Buffer to the IA (first stage)
 	UINT Stride = sizeof(Vertex);
 	UINT Offset = 0;
-	D3D11DeviceContext->IASetVertexBuffers(0, 1, &TriangleVertBuffer, &Stride, &Offset);
+	D3D11DeviceContext->IASetVertexBuffers(0, 1, &SquareVertexBuffer, &Stride, &Offset);
 
 	// Create the Input Layout
 	HR(D3D11Device->CreateInputLayout(Layout, NumLayoutElements, VSBuffer->GetBufferPointer(), VSBuffer->GetBufferSize(), &VertexLayout));
@@ -434,7 +462,8 @@ void DrawScene()
 	FLOAT bgColor[4] = { Red, Green, Blue, 1.0f };
 	D3D11DeviceContext->ClearRenderTargetView(RenderTargetView, bgColor);
 
-	D3D11DeviceContext->Draw(3, 0);
+	// Draw our square (indexed)
+	D3D11DeviceContext->DrawIndexed(6, 0, 0);
 
 	// Swap the front buffer with the backbuffer
 	SwapChain->Present(0, 0);
