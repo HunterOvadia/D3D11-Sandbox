@@ -116,6 +116,10 @@ ID3D10Blob *PSBuffer;
 // Input (Vertex) Layout
 ID3D11InputLayout *VertexLayout;
 
+// Stores the Depth Stencil View and Buffer
+ID3D11DepthStencilView *DepthStencilView;
+ID3D11Texture2D *DepthStencilBuffer;
+
 float Red = 0.0f;
 float Green = 0.0f;
 float Blue = 0.0f;
@@ -335,10 +339,27 @@ bool InitializeD3D(HINSTANCE Instance)
 	HR(D3D11Device->CreateRenderTargetView(Backbuffer, 0, &RenderTargetView));
 	Backbuffer->Release();
 
+	// Create our Depth/Stencil Desc
+	D3D11_TEXTURE2D_DESC DepthStencilDesc = {};
+	{
+		DepthStencilDesc.Width = Width;
+		DepthStencilDesc.Height = Height;
+		DepthStencilDesc.MipLevels = 1;
+		DepthStencilDesc.ArraySize = 1;
+		DepthStencilDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+		DepthStencilDesc.SampleDesc.Count = 1;
+		DepthStencilDesc.SampleDesc.Quality = 0;
+		DepthStencilDesc.Usage = D3D11_USAGE_DEFAULT;
+		DepthStencilDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+	}
+
+	// Create the Depth/Stencil buffer and bind it to the OM stage of the Pipeline.
+	D3D11Device->CreateTexture2D(&DepthStencilDesc, 0, &DepthStencilBuffer);
+	D3D11Device->CreateDepthStencilView(DepthStencilBuffer, 0, &DepthStencilView);
+
 	// Bind the RenderTargetView to the Output Merger state of the pipeline. 
-	// Also will bind our Depth/Stencil Buffer as well, but set to 0 for now, since it hasn't been created
 	// NumViews is 1 since we only have 1 RenderTarget to bind
-	D3D11DeviceContext->OMSetRenderTargets(1, &RenderTargetView, 0);
+	D3D11DeviceContext->OMSetRenderTargets(1, &RenderTargetView, DepthStencilView);
 
 	return true;
 }
@@ -356,6 +377,8 @@ void ReleaseObjects()
 	VSBuffer->Release();
 	PSBuffer->Release();
 	VertexLayout->Release();
+	DepthStencilView->Release();
+	DepthStencilBuffer->Release();
 }
 
 bool InitScene()
@@ -436,6 +459,8 @@ bool InitScene()
 	Viewport.TopLeftY = 0;
 	Viewport.Width = Width;
 	Viewport.Height = Height;
+	Viewport.MinDepth = 0.0f; // Closest value in Depth
+	Viewport.MaxDepth = 1.0f; // Furthest value in Depth
 
 	D3D11DeviceContext->RSSetViewports(1, &Viewport);
 
@@ -444,16 +469,7 @@ bool InitScene()
 
 void UpdateScene()
 {
-	Red += ColorModR * 0.00005f;
-	Green += ColorModG * 0.00002f;
-	Blue += ColorModB * 0.00001f;
 
-	if (Red >= 1.0f || Red <= 0.0f)
-		ColorModR *= -1;
-	if (Green >= 1.0f || Green <= 0.0f)
-		ColorModG *= -1;
-	if (Blue >= 1.0f || Blue <= 0.0f)
-		ColorModB *= -1;;
 }
 
 void DrawScene()
@@ -461,6 +477,9 @@ void DrawScene()
 	// Clear backbuffer
 	FLOAT bgColor[4] = { Red, Green, Blue, 1.0f };
 	D3D11DeviceContext->ClearRenderTargetView(RenderTargetView, bgColor);
+
+	// Clear the Depth/Stencil View
+	D3D11DeviceContext->ClearDepthStencilView(DepthStencilView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 
 	// Draw our square (indexed)
 	D3D11DeviceContext->DrawIndexed(6, 0, 0);
