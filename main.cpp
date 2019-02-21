@@ -4,9 +4,17 @@
 #include <DirectXMath.h>
 #include <d3dcompiler.h>
 #include <WICTextureLoader.h>
+#include <dxgi.h>
+#include <sstream>
+#include <dwrite.h>
+#include <d2d1.h>
 
+#pragma comment(lib, "d3d10_1.lib")
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "DXGI.lib")
+#pragma comment(lib, "D2D1.lib")
+#pragma comment(lib, "dwrite.lib")
 
 #if defined(DEBUG) | defined(_DEBUG)
 #ifndef HR
@@ -122,9 +130,6 @@ ID3D11InputLayout *VertexLayout;
 ID3D11DepthStencilView *DepthStencilView;
 ID3D11Texture2D *DepthStencilBuffer;
 
-// Set the Render state of the RS stage of Pipeline
-ID3D11RasterizerState *WireFrameState;
-
 
 // Stores the constant buffer variables in our World View Projection Matrix to send to the Effect file
 ID3D11Buffer *cbPerObjectBuffer;
@@ -154,10 +159,36 @@ ID3D11ShaderResourceView *CubeTexture;
 // Holds the sampler state info
 ID3D11SamplerState *CubeTextureSamplerState;
 
+
+ID3D11BlendState *TransparentBlendState;
+ID3D11RasterizerState *CCCullMode;
+ID3D11RasterizerState *CWCullMode;
+ID3D11RasterizerState *NoCullMode;
+
+ID3D10Device1 *D3D101Device;
+IDXGIKeyedMutex *KeyedMutex1;
+IDXGIKeyedMutex *KeyedMutex0;
+ID2D1RenderTarget *D2DRenderTarget;
+ID2D1SolidColorBrush *Brush;
+ID3D11Texture2D *Backbuffer1;
+ID3D11Texture2D *SharedTexture1;
+ID3D11Buffer *D2DVertBuffer;
+ID3D11Buffer *D2DIndexBuffer;
+ID3D11ShaderResourceView *D2DTexture;
+IDWriteFactory *DWriteFactory;
+IDWriteTextFormat *TextFormat;
+
+std::wstring PrintText;
+
+ID3D11Buffer *cbPerFrameBuffer;
+ID3D11PixelShader *D2D_PS;
+ID3D10Blob *D2D_PS_Buffer;
+
 // Defines our constant buffer in code is the same layout of the structure of the buffer in the effect file
 struct cbPerObject
 {
 	XMMATRIX WVP;
+	XMMATRIX World;
 };
 cbPerObject cbPerObj;
 
@@ -169,6 +200,14 @@ int ColorModG = 1;
 int ColorModB = 1;
 
 
+double CountsPerSecond = 0.0;
+__int64 CounterStart = 0;
+
+int FrameCount = 0;
+int FPS = 0;
+
+__int64 FrameTimeOld = 0;
+double FrameTime;
 
 // Initializes D3D
 bool InitializeD3D(HINSTANCE Instance);
@@ -176,20 +215,47 @@ bool InitializeD3D(HINSTANCE Instance);
 // Releases objects to prevent memory leaks
 void ReleaseObjects();
 bool InitScene();
-void UpdateScene();
+void UpdateScene(double time);
 void DrawScene();
+
+void StartTimer();
+double GetTime();
+double GetFrameTime();
 
 struct Vertex
 {
 	Vertex() { }
 	Vertex(float x, float y, float z, 
-		   float u, float v) : 
+		   float u, float v,
+			float nx, float ny, float nz) : 
 		pos(x, y, z),
-		texCoord(u, v) { }
+		texCoord(u, v),
+		normal(nx, ny, nz) { }
 
-	DirectX::XMFLOAT3 pos;
-	DirectX::XMFLOAT2 texCoord;
+	XMFLOAT3 pos;
+	XMFLOAT2 texCoord;
+	XMFLOAT3 normal;
 };
+
+struct Light
+{
+	Light() { ZeroMemory(this, sizeof(Light)); }
+	XMFLOAT3 dir;
+	float pad;
+	XMFLOAT4 ambient;
+	XMFLOAT4 diffuse;
+};
+
+Light light;
+
+struct cbPerFrame
+{
+	Light light;
+};
+
+cbPerFrame constBufferPerFrame;
+
+
 
 // Tells us what our Vertex structure consists of and what to do with each component of our Vertex structure
 // Each element describes one element in the vertex structure.
@@ -197,10 +263,17 @@ struct Vertex
 D3D11_INPUT_ELEMENT_DESC Layout[] = 
 {
 	{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-	{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 }
+	{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+	{ "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 }
 };
 
 UINT NumLayoutElements = ARRAYSIZE(Layout);
+
+
+bool InitD2D_D3D11_DWrite(IDXGIAdapter1 *Adapter);
+void InitD2DScreenTexture();
+void RenderText(std::wstring text, int inInt);
+
 
 //////////////////////////////////////////////////////////////
 
@@ -283,7 +356,16 @@ int MessageLoop()
 		}
 		else
 		{
-			UpdateScene();
+			FrameCount++;
+			if(GetTime() > 1.0f)
+			{
+				FPS = FrameCount;
+				FrameCount = 0;
+				StartTimer();
+			}
+			FrameTime = GetFrameTime();
+
+			UpdateScene(FrameTime);
 			DrawScene();
 		}
 	}
@@ -314,6 +396,12 @@ LRESULT CALLBACK WindowProcedure(HWND Window, UINT Msg, WPARAM WParam, LPARAM LP
 
 bool InitializeD3D(HINSTANCE Instance)
 {
+	IDXGIFactory1 *DXGIFactory;
+	HR(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void **)&DXGIFactory));
+	IDXGIAdapter1 *Adapter;
+	HR(DXGIFactory->EnumAdapters1(0, &Adapter));
+	DXGIFactory->Release();
+
 	// Describe our Backbuffer.
 	DXGI_MODE_DESC BufferDesc = {};
 	{
@@ -323,9 +411,7 @@ bool InitializeD3D(HINSTANCE Instance)
 		// RefreshRate (Rational), 60/1 or 60Hz
 		BufferDesc.RefreshRate.Numerator = 60;
 		BufferDesc.RefreshRate.Denominator = 1;
-		// DXGI_FORMAT enum type. We use DXGI_FORMAT_R8G8B8A8_UNORM to represent
-		// 32-bit unsigned integer, 8bits for each RGBA
-		BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 		// DXGI_MODE_SCANLINE_ORDER enum type. Describes the manner in which the rasterizer will render onto the surface.
 		// Since we use Double Buffering, this wont be noticeable, so we can set to unspecified.
 		BufferDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
@@ -358,10 +444,10 @@ bool InitializeD3D(HINSTANCE Instance)
 	}
 
 	// Create the D3D Device, Device Context, and Swap Chain
-	HR(D3D11CreateDeviceAndSwapChain(0,
-		D3D_DRIVER_TYPE_HARDWARE,
+	HR(D3D11CreateDeviceAndSwapChain(Adapter,
+		D3D_DRIVER_TYPE_UNKNOWN,
 		0,
-		0,
+		D3D11_CREATE_DEVICE_DEBUG | D3D11_CREATE_DEVICE_BGRA_SUPPORT,
 		0,
 		0,
 		D3D11_SDK_VERSION,
@@ -371,14 +457,13 @@ bool InitializeD3D(HINSTANCE Instance)
 		0,
 		&D3D11DeviceContext));
 
+	InitD2D_D3D11_DWrite(Adapter);
+
+	Adapter->Release();
 
 	// Create our Backbuffer to create our RenderTargetView
-	ID3D11Texture2D *Backbuffer;
-	HR(SwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void **)&Backbuffer))
-
-	// Create our RenderTargetView, to send to the Output Merger state of the pipeline.
-	HR(D3D11Device->CreateRenderTargetView(Backbuffer, 0, &RenderTargetView));
-	Backbuffer->Release();
+	HR(SwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void **)&Backbuffer1))
+	HR(D3D11Device->CreateRenderTargetView(Backbuffer1, 0, &RenderTargetView));
 
 	// Create our Depth/Stencil Desc
 	D3D11_TEXTURE2D_DESC DepthStencilDesc = {};
@@ -421,61 +506,85 @@ void ReleaseObjects()
 	DepthStencilView->Release();
 	DepthStencilBuffer->Release();
 	cbPerObjectBuffer->Release();
-	WireFrameState->Release();
+	TransparentBlendState->Release();
+	CCCullMode->Release();
+	CWCullMode->Release();
+	NoCullMode->Release();
+
+	D3D101Device->Release();
+	KeyedMutex1->Release();
+	KeyedMutex0->Release();
+	D2DRenderTarget->Release();
+	Brush->Release();
+	Backbuffer1->Release();
+	SharedTexture1->Release();
+	DWriteFactory->Release();
+	TextFormat->Release();
+	D2DTexture->Release();
+
+	cbPerFrameBuffer->Release();
 }
 
 bool InitScene()
 {
+	InitD2DScreenTexture();
+
 	// Compile Shaders From File
 	HR(D3DCompileFromFile(L"Effects.fx", 0, 0, "VS", "vs_5_0", 0, 0, &VSBuffer, 0));
 	HR(D3DCompileFromFile(L"Effects.fx", 0, 0, "PS", "ps_5_0", 0, 0, &PSBuffer, 0));
+	HR(D3DCompileFromFile(L"Effects.fx", 0, 0, "D2D_PS", "ps_5_0", 0, 0, &D2D_PS_Buffer, 0));
 
 	// Create the Shader object
 	HR(D3D11Device->CreateVertexShader(VSBuffer->GetBufferPointer(), VSBuffer->GetBufferSize(), 0, &VertexShader));
 	HR(D3D11Device->CreatePixelShader(PSBuffer->GetBufferPointer(), PSBuffer->GetBufferSize(), 0, &PixelShader));
+	HR(D3D11Device->CreatePixelShader(D2D_PS_Buffer->GetBufferPointer(), D2D_PS_Buffer->GetBufferSize(), 0, &D2D_PS));
 
 	// Now that the shaders are compiled and created, need to set them as our Pipelines current shader.
 	D3D11DeviceContext->VSSetShader(VertexShader, 0, 0);
 	D3D11DeviceContext->PSSetShader(PixelShader, 0, 0);
 
+	light.dir = XMFLOAT3(0.25f, 0.5f, -1.0f);
+	light.ambient = XMFLOAT4(0.2f, 0.2f, 0.2f, 1.0f);
+	light.diffuse = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+
 	// Where the points meet
 	Vertex Vertices[] =
 	{
 		// Front Face
-		Vertex(-1.0f, -1.0f, -1.0f, 0.0f, 1.0f),
-		Vertex(-1.0f,  1.0f, -1.0f, 0.0f, 0.0f),
-		Vertex(1.0f,  1.0f, -1.0f, 1.0f, 0.0f),
-		Vertex(1.0f, -1.0f, -1.0f, 1.0f, 1.0f),
+		Vertex(-1.0f, -1.0f, -1.0f, 0.0f, 1.0f,-1.0f, -1.0f, -1.0f),
+		Vertex(-1.0f,  1.0f, -1.0f, 0.0f, 0.0f,-1.0f,  1.0f, -1.0f),
+		Vertex(1.0f,  1.0f, -1.0f, 1.0f, 0.0f, 1.0f,  1.0f, -1.0f),
+		Vertex(1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f),
 
 		// Back Face
-		Vertex(-1.0f, -1.0f, 1.0f, 1.0f, 1.0f),
-		Vertex(1.0f, -1.0f, 1.0f, 0.0f, 1.0f),
-		Vertex(1.0f,  1.0f, 1.0f, 0.0f, 0.0f),
-		Vertex(-1.0f,  1.0f, 1.0f, 1.0f, 0.0f),
+		Vertex(-1.0f, -1.0f, 1.0f, 1.0f, 1.0f,-1.0f, -1.0f, 1.0f),
+		Vertex(1.0f, -1.0f, 1.0f, 0.0f, 1.0f, 1.0f, -1.0f, 1.0f),
+		Vertex(1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f,  1.0f, 1.0f),
+		Vertex(-1.0f,  1.0f, 1.0f, 1.0f, 0.0f,-1.0f,  1.0f, 1.0f),
 
 		// Top Face
-		Vertex(-1.0f, 1.0f, -1.0f, 0.0f, 1.0f),
-		Vertex(-1.0f, 1.0f,  1.0f, 0.0f, 0.0f),
-		Vertex(1.0f, 1.0f,  1.0f, 1.0f, 0.0f),
-		Vertex(1.0f, 1.0f, -1.0f, 1.0f, 1.0f),
+		Vertex(-1.0f, 1.0f, -1.0f, 0.0f, 1.0f,-1.0f, 1.0f, -1.0f),
+		Vertex(-1.0f, 1.0f,  1.0f, 0.0f, 0.0f,-1.0f, 1.0f,  1.0f),
+		Vertex(1.0f, 1.0f,  1.0f, 1.0f, 0.0f, 1.0f, 1.0f,  1.0f),
+		Vertex(1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f),
 
 		// Bottom Face
-		Vertex(-1.0f, -1.0f, -1.0f, 1.0f, 1.0f),
-		Vertex(1.0f, -1.0f, -1.0f, 0.0f, 1.0f),
-		Vertex(1.0f, -1.0f,  1.0f, 0.0f, 0.0f),
-		Vertex(-1.0f, -1.0f,  1.0f, 1.0f, 0.0f),
+		Vertex(-1.0f, -1.0f, -1.0f, 1.0f, 1.0f,-1.0f, -1.0f, -1.0f),
+		Vertex(1.0f, -1.0f, -1.0f, 0.0f, 1.0f, 1.0f, -1.0f, -1.0f),
+		Vertex(1.0f, -1.0f,  1.0f, 0.0f, 0.0f, 1.0f, -1.0f,  1.0f),
+		Vertex(-1.0f, -1.0f,  1.0f, 1.0f, 0.0f,-1.0f, -1.0f,  1.0f),
 
 		// Left Face
-		Vertex(-1.0f, -1.0f,  1.0f, 0.0f, 1.0f),
-		Vertex(-1.0f,  1.0f,  1.0f, 0.0f, 0.0f),
-		Vertex(-1.0f,  1.0f, -1.0f, 1.0f, 0.0f),
-		Vertex(-1.0f, -1.0f, -1.0f, 1.0f, 1.0f),
+		Vertex(-1.0f, -1.0f,  1.0f, 0.0f, 1.0f,-1.0f, -1.0f,  1.0f),
+		Vertex(-1.0f,  1.0f,  1.0f, 0.0f, 0.0f,-1.0f,  1.0f,  1.0f),
+		Vertex(-1.0f,  1.0f, -1.0f, 1.0f, 0.0f,-1.0f,  1.0f, -1.0f),
+		Vertex(-1.0f, -1.0f, -1.0f, 1.0f, 1.0f,-1.0f, -1.0f, -1.0f),
 
 		// Right Face
-		Vertex(1.0f, -1.0f, -1.0f, 0.0f, 1.0f),
-		Vertex(1.0f,  1.0f, -1.0f, 0.0f, 0.0f),
-		Vertex(1.0f,  1.0f,  1.0f, 1.0f, 0.0f),
-		Vertex(1.0f, -1.0f,  1.0f, 1.0f, 1.0f),
+		Vertex(1.0f, -1.0f, -1.0f, 0.0f, 1.0f, 1.0f, -1.0f, -1.0f),
+		Vertex(1.0f,  1.0f, -1.0f, 0.0f, 0.0f, 1.0f,  1.0f, -1.0f),
+		Vertex(1.0f,  1.0f,  1.0f, 1.0f, 0.0f, 1.0f,  1.0f,  1.0f),
+		Vertex(1.0f, -1.0f,  1.0f, 1.0f, 1.0f, 1.0f, -1.0f,  1.0f),
 	};
 
 	// Allows to use part of another triangle to use on another
@@ -565,6 +674,11 @@ bool InitScene()
 	ConstantBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 	HR(D3D11Device->CreateBuffer(&ConstantBufferDesc, 0, &cbPerObjectBuffer));
 
+	ConstantBufferDesc = {};
+	ConstantBufferDesc.ByteWidth = sizeof(cbPerFrame);
+	ConstantBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+	HR(D3D11Device->CreateBuffer(&ConstantBufferDesc, 0, &cbPerFrameBuffer));
+
 	// Setup Camera
 	CameraPosition = XMVectorSet(0.0f, 3.0f, -8.0f, 0.0f);
 	CameraTarget = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
@@ -580,10 +694,7 @@ bool InitScene()
 	D3D11_RASTERIZER_DESC RasterizerDesc = {};
 	RasterizerDesc.FillMode = D3D11_FILL_SOLID;
 	RasterizerDesc.CullMode = D3D11_CULL_NONE;
-
-	HR(D3D11Device->CreateRasterizerState(&RasterizerDesc, &WireFrameState));
-
-	D3D11DeviceContext->RSSetState(WireFrameState);
+	HR(D3D11Device->CreateRasterizerState(&RasterizerDesc, &NoCullMode));
 
 	// Load Texture File
 	HR(CreateWICTextureFromFile(D3D11Device, L"test.png", NULL, &CubeTexture));
@@ -601,17 +712,42 @@ bool InitScene()
 	// Create the Sampler
 	HR(D3D11Device->CreateSamplerState(&SamplerDesc, &CubeTextureSamplerState));
 
+	D3D11_BLEND_DESC BlendDesc = {};
+
+	D3D11_RENDER_TARGET_BLEND_DESC RenderTargetBlendDesc = {};
+	RenderTargetBlendDesc.BlendEnable = true;
+	RenderTargetBlendDesc.SrcBlend = D3D11_BLEND_SRC_COLOR;
+	RenderTargetBlendDesc.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+	RenderTargetBlendDesc.BlendOp = D3D11_BLEND_OP_ADD;
+	RenderTargetBlendDesc.SrcBlendAlpha = D3D11_BLEND_ONE;
+	RenderTargetBlendDesc.DestBlendAlpha = D3D11_BLEND_ZERO;
+	RenderTargetBlendDesc.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+	RenderTargetBlendDesc.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+
+	BlendDesc.AlphaToCoverageEnable = false;
+	BlendDesc.RenderTarget[0] = RenderTargetBlendDesc;
+
+	D3D11Device->CreateBlendState(&BlendDesc, &TransparentBlendState);
+
+	D3D11_RASTERIZER_DESC CMDesc = {};
+	CMDesc.FillMode = D3D11_FILL_SOLID;
+	CMDesc.CullMode = D3D11_CULL_BACK;
+	CMDesc.FrontCounterClockwise = true;
+	HR(D3D11Device->CreateRasterizerState(&CMDesc, &CCCullMode));
+	CMDesc.FrontCounterClockwise = false;
+	HR(D3D11Device->CreateRasterizerState(&CMDesc, &CWCullMode));
+
+
 	return true;
 }
 
-void UpdateScene()
+void UpdateScene(double time)
 {
-	Rot += .0005f;
+	Rot += 1.0f * time;
 	if (Rot > 6.28f) // 2pi
 		Rot = 0.0f;
 
 	Cube1World = XMMatrixIdentity();
-
 
 	// Cube1 World Space Matrix
 	XMVECTOR rotAxis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
@@ -630,40 +766,224 @@ void DrawScene()
 	// Clear backbuffer
 	FLOAT bgColor[4] = { Red, Green, Blue, 0.0f };
 	D3D11DeviceContext->ClearRenderTargetView(RenderTargetView, bgColor);
-
-	// Clear the Depth/Stencil View
 	D3D11DeviceContext->ClearDepthStencilView(DepthStencilView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 
-	// Create the WVP Matrix
-	WVP = Cube1World * CameraView * CameraProjection;
-	// Update the Constant Buffer
-	// Need to Transpose (swap rows and columns), when sending them to Effect files
-	cbPerObj.WVP = XMMatrixTranspose(WVP);
-	// Update the effects file constant buffer with ours so they match
-	D3D11DeviceContext->UpdateSubresource(cbPerObjectBuffer, 0, NULL, &cbPerObj, 0, 0);
-	// Set the Vertex Shader Constant buffer to ours
-	D3D11DeviceContext->VSSetConstantBuffers(0, 1, &cbPerObjectBuffer);
+	constBufferPerFrame.light = light;
+	D3D11DeviceContext->UpdateSubresource(cbPerFrameBuffer, 0, NULL, &constBufferPerFrame, 0, 0);
+	D3D11DeviceContext->PSSetConstantBuffers(0, 1, &cbPerFrameBuffer);
 
+	D3D11DeviceContext->VSSetShader(VertexShader, 0, 0);
+	D3D11DeviceContext->PSSetShader(PixelShader, 0, 0);
+
+	D3D11DeviceContext->OMSetRenderTargets(1, &RenderTargetView, DepthStencilView);
+	D3D11DeviceContext->OMSetBlendState(0, 0, 0xffffffff);
+
+	D3D11DeviceContext->IASetIndexBuffer(SquareIndexBuffer, DXGI_FORMAT_R32_UINT, 0);
+	UINT Stride = sizeof(Vertex);
+	UINT Offset = 0;
+	D3D11DeviceContext->IASetVertexBuffers(0, 1, &SquareVertexBuffer, &Stride, &Offset);
+
+
+	WVP = Cube1World * CameraView * CameraProjection;
+	cbPerObj.World = XMMatrixTranspose(Cube1World);
+	cbPerObj.WVP = XMMatrixTranspose(WVP);
+	D3D11DeviceContext->UpdateSubresource(cbPerObjectBuffer, 0, NULL, &cbPerObj, 0, 0);
+	D3D11DeviceContext->VSSetConstantBuffers(0, 1, &cbPerObjectBuffer);
 	D3D11DeviceContext->PSSetShaderResources(0, 1, &CubeTexture);
 	D3D11DeviceContext->PSSetSamplers(0, 1, &CubeTextureSamplerState);
 
-	// Draw our cube (indexed)
+	D3D11DeviceContext->RSSetState(CWCullMode);
 	D3D11DeviceContext->DrawIndexed(36, 0, 0);
 
 	WVP = Cube2World * CameraView * CameraProjection;
+	cbPerObj.World = XMMatrixTranspose(Cube2World);
 	cbPerObj.WVP = XMMatrixTranspose(WVP);
-	// Update the effects file constant buffer with ours so they match
 	D3D11DeviceContext->UpdateSubresource(cbPerObjectBuffer, 0, NULL, &cbPerObj, 0, 0);
-	// Set the Vertex Shader Constant buffer to ours
 	D3D11DeviceContext->VSSetConstantBuffers(0, 1, &cbPerObjectBuffer);
-
 	D3D11DeviceContext->PSSetShaderResources(0, 1, &CubeTexture);
 	D3D11DeviceContext->PSSetSamplers(0, 1, &CubeTextureSamplerState);
 
-	// Draw our cube (indexed)
+	D3D11DeviceContext->RSSetState(CWCullMode);
 	D3D11DeviceContext->DrawIndexed(36, 0, 0);
 
+	RenderText(L"FPS: ", FPS);
 
 	// Swap the front buffer with the backbuffer
 	SwapChain->Present(0, 0);
+}
+
+bool InitD2D_D3D11_DWrite(IDXGIAdapter1 *Adapter)
+{
+	D3D10CreateDevice1(Adapter, D3D10_DRIVER_TYPE_HARDWARE, NULL, D3D10_CREATE_DEVICE_DEBUG | D3D10_CREATE_DEVICE_BGRA_SUPPORT,
+		D3D10_FEATURE_LEVEL_10_1, D3D10_1_SDK_VERSION, &D3D101Device);
+
+	D3D11_TEXTURE2D_DESC SharedTextureDesc = {};
+	SharedTextureDesc.Width = Width;
+	SharedTextureDesc.Height = Height;
+	SharedTextureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+	SharedTextureDesc.MipLevels = 1;
+	SharedTextureDesc.ArraySize = 1;
+	SharedTextureDesc.SampleDesc.Count = 1;
+	SharedTextureDesc.Usage = D3D11_USAGE_DEFAULT;
+	SharedTextureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+	SharedTextureDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+	HR(D3D11Device->CreateTexture2D(&SharedTextureDesc, NULL, &SharedTexture1));
+	HR(SharedTexture1->QueryInterface(__uuidof(IDXGIKeyedMutex), (void **)&KeyedMutex1));
+
+	IDXGIResource *SharedResource10;
+	HANDLE SharedHandle10;
+
+	HR(SharedTexture1->QueryInterface(__uuidof(IDXGIResource), (void **)&SharedResource10));
+	HR(SharedResource10->GetSharedHandle(&SharedHandle10));
+	SharedResource10->Release();
+
+	IDXGISurface1 *SharedSurface10;
+	HR(D3D101Device->OpenSharedResource(SharedHandle10, __uuidof(IDXGISurface1), (void **)(&SharedSurface10)));
+	HR(SharedSurface10->QueryInterface(__uuidof(IDXGIKeyedMutex), (void **)&KeyedMutex0));
+
+	ID2D1Factory *D2DFactory;
+	HR(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), (void **)&D2DFactory));
+
+	D2D1_RENDER_TARGET_PROPERTIES RenderTargetProperties = {};
+	RenderTargetProperties.type = D2D1_RENDER_TARGET_TYPE_HARDWARE;
+	RenderTargetProperties.pixelFormat = D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_PREMULTIPLIED);
+
+	HR(D2DFactory->CreateDxgiSurfaceRenderTarget(SharedSurface10, &RenderTargetProperties, &D2DRenderTarget));
+	SharedSurface10->Release();
+	D2DFactory->Release();
+
+	HR(D2DRenderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 0.0f, 1.0f), &Brush));
+	HR(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown **>(&DWriteFactory)));
+
+	HR(DWriteFactory->CreateTextFormat(L"Script",
+		NULL,
+		DWRITE_FONT_WEIGHT_REGULAR,
+		DWRITE_FONT_STYLE_NORMAL,
+		DWRITE_FONT_STRETCH_NORMAL,
+		24.0f,
+		L"en-us",
+		&TextFormat));
+
+	HR(TextFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING));
+	HR(TextFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR));
+
+	D3D101Device->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_POINTLIST);
+
+	return true;
+}
+
+void InitD2DScreenTexture()
+{
+	//Create the vertex buffer
+	Vertex v[] =
+	{
+		// Front Face
+		Vertex(-1.0f, -1.0f, -1.0f, 0.0f, 1.0f,-1.0f, -1.0f, -1.0f),
+		Vertex(-1.0f,  1.0f, -1.0f, 0.0f, 0.0f,-1.0f,  1.0f, -1.0f),
+		Vertex(1.0f,  1.0f, -1.0f, 1.0f, 0.0f, 1.0f,  1.0f, -1.0f),
+		Vertex(1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f),
+	};
+
+	DWORD indices[] = {
+		// Front Face
+		0,  1,  2,
+		0,  2,  3,
+	};
+
+	D3D11_BUFFER_DESC IndexBufferDesc = {};
+	IndexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+	IndexBufferDesc.ByteWidth = sizeof(DWORD) * 2 * 3;
+	IndexBufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+
+	D3D11_SUBRESOURCE_DATA IndexInitData;
+	IndexInitData.pSysMem = indices;
+	D3D11Device->CreateBuffer(&IndexBufferDesc, &IndexInitData, &D2DIndexBuffer);
+
+	D3D11_BUFFER_DESC VertexBufferDesc = {};
+	VertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+	VertexBufferDesc.ByteWidth = sizeof(Vertex) * 4;
+	VertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+
+	D3D11_SUBRESOURCE_DATA VertexInitData;
+	VertexInitData.pSysMem = v;
+	D3D11Device->CreateBuffer(&VertexBufferDesc, &VertexInitData, &D2DVertBuffer);
+
+	D3D11Device->CreateShaderResourceView(SharedTexture1, NULL, &D2DTexture);
+}
+
+void RenderText(std::wstring text, int inInt)
+{
+	KeyedMutex1->ReleaseSync(0);
+	KeyedMutex0->AcquireSync(0, 5);
+	D2DRenderTarget->BeginDraw();
+
+	D2DRenderTarget->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+
+	std::wostringstream PrintString;
+	PrintString << text << inInt;
+	PrintText = PrintString.str();
+
+	D2D1_COLOR_F FontColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+	Brush->SetColor(FontColor);
+
+	D2D1_RECT_F LayoutRect = D2D1::RectF(0, 0, Width, Height);
+
+	D2DRenderTarget->DrawText(PrintText.c_str(), wcslen(PrintText.c_str()), TextFormat, LayoutRect, Brush);
+
+	D2DRenderTarget->EndDraw();
+
+	KeyedMutex0->ReleaseSync(1);
+	KeyedMutex1->AcquireSync(1, 5);
+
+	D3D11DeviceContext->OMSetBlendState(TransparentBlendState, NULL, 0xffffffff);
+
+	D3D11DeviceContext->IASetIndexBuffer(D2DIndexBuffer, DXGI_FORMAT_R32_UINT, 0);
+	UINT Stride = sizeof(Vertex);
+	UINT Offset = 0;
+	D3D11DeviceContext->IASetVertexBuffers(0, 1, &D2DVertBuffer, &Stride, &Offset);
+
+	WVP = XMMatrixIdentity();
+	cbPerObj.World = XMMatrixTranspose(WVP);
+	cbPerObj.WVP = XMMatrixTranspose(WVP);
+	D3D11DeviceContext->UpdateSubresource(cbPerObjectBuffer, 0, 0, &cbPerObj, 0, 0);
+	D3D11DeviceContext->VSSetConstantBuffers(0, 1, &cbPerObjectBuffer);
+
+	D3D11DeviceContext->PSSetShaderResources(0, 1, &D2DTexture);
+	D3D11DeviceContext->PSSetSamplers(0, 1, &CubeTextureSamplerState);
+
+	D3D11DeviceContext->RSSetState(CWCullMode);
+	D3D11DeviceContext->DrawIndexed(6, 0, 0);
+}
+
+void StartTimer()
+{
+	LARGE_INTEGER FrequencyCount;
+	QueryPerformanceFrequency(&FrequencyCount);
+
+	CountsPerSecond = double(FrequencyCount.QuadPart);
+
+	QueryPerformanceFrequency(&FrequencyCount);
+	CounterStart = FrequencyCount.QuadPart;
+}
+
+double GetTime()
+{
+	LARGE_INTEGER _CurrentTime;
+	QueryPerformanceCounter(&_CurrentTime);
+	return double(_CurrentTime.QuadPart - CounterStart) / CountsPerSecond;
+}
+
+double GetFrameTime()
+{
+	LARGE_INTEGER _CurrentTime;
+	__int64 _TickCount;
+	QueryPerformanceCounter(&_CurrentTime);
+
+	_TickCount = _CurrentTime.QuadPart - FrameTimeOld;
+	FrameTimeOld = _CurrentTime.QuadPart;
+
+	if (_TickCount < 0.0f)
+		_TickCount = 0.0f;
+
+	return float(_TickCount) / CountsPerSecond;
 }
