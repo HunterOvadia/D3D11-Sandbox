@@ -241,7 +241,13 @@ struct Light
 {
 	Light() { ZeroMemory(this, sizeof(Light)); }
 	XMFLOAT3 dir;
-	float pad;
+	float pad1;
+
+	XMFLOAT3 pos;
+	float range;
+	XMFLOAT3 att;
+	float pad2;
+
 	XMFLOAT4 ambient;
 	XMFLOAT4 diffuse;
 };
@@ -543,8 +549,10 @@ bool InitScene()
 	D3D11DeviceContext->VSSetShader(VertexShader, 0, 0);
 	D3D11DeviceContext->PSSetShader(PixelShader, 0, 0);
 
-	light.dir = XMFLOAT3(0.25f, 0.5f, -1.0f);
-	light.ambient = XMFLOAT4(0.2f, 0.2f, 0.2f, 1.0f);
+	light.pos = XMFLOAT3(0.0f, 0.0f, 0.0f);
+	light.range = 100.0f;
+	light.att = XMFLOAT3(0.0f, 0.2, 0.0f);
+	light.ambient = XMFLOAT4(0.3f, 0.3f, 0.3f, 1.0f);
 	light.diffuse = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
 
 	// Where the points meet
@@ -754,6 +762,13 @@ void UpdateScene(double time)
 	Rotation = XMMatrixRotationAxis(rotAxis, Rot);
 	Translation = XMMatrixTranslation(0.0f, 0.0f, 4.0f);
 	Cube1World = Translation * Rotation;
+
+	XMVECTOR LightVector = XMVectorZero();
+	LightVector = XMVector3TransformCoord(LightVector, Cube1World);
+
+	light.pos.x = XMVectorGetX(LightVector);
+	light.pos.y = XMVectorGetY(LightVector);
+	light.pos.z = XMVectorGetZ(LightVector);
 
 	Cube2World = XMMatrixIdentity();
 	Rotation = XMMatrixRotationAxis(rotAxis, -Rot);
