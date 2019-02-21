@@ -8,6 +8,7 @@
 #include <sstream>
 #include <dwrite.h>
 #include <d2d1.h>
+#include <dinput.h>
 
 #pragma comment(lib, "d3d10_1.lib")
 #pragma comment(lib, "d3d11.lib")
@@ -15,6 +16,8 @@
 #pragma comment(lib, "DXGI.lib")
 #pragma comment(lib, "D2D1.lib")
 #pragma comment(lib, "dwrite.lib")
+#pragma comment(lib, "dinput8.lib")
+#pragma comment(lib, "dxguid.lib")
 
 #if defined(DEBUG) | defined(_DEBUG)
 #ifndef HR
@@ -281,6 +284,23 @@ void InitD2DScreenTexture();
 void RenderText(std::wstring text, int inInt);
 
 
+IDirectInputDevice8 *DIKeyboard;
+IDirectInputDevice8 *DIMouse;
+
+DIMOUSESTATE MouseLastState;
+LPDIRECTINPUT8 DirectInput;
+
+float RotX = 0;
+float RotZ = 0;
+float ScaleX = 1.0f;
+float ScaleY = 1.0f;
+
+XMMATRIX RotationX;
+XMMATRIX RotationZ;
+
+bool InitDirectInput(HINSTANCE Instance);
+void DetectInput(double time);
+
 //////////////////////////////////////////////////////////////
 
 
@@ -295,6 +315,12 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine
 	if(!InitializeD3D(Instance))
 	{
 		MessageBox(0, "Error Initializing D3D.", "Error", MB_OK | MB_ICONERROR);
+		return 0;
+	}
+
+	if (!InitDirectInput(Instance))
+	{
+		MessageBox(0, "Error Initializing Direct Input.", "Error", MB_OK | MB_ICONERROR);
 		return 0;
 	}
 
@@ -371,12 +397,67 @@ int MessageLoop()
 			}
 			FrameTime = GetFrameTime();
 
+			DetectInput(FrameTime);
 			UpdateScene(FrameTime);
 			DrawScene();
 		}
 	}
 
 	return Message.wParam;
+}
+
+bool InitDirectInput(HINSTANCE Instance)
+{
+	HR(DirectInput8Create(Instance, DIRECTINPUT_VERSION, IID_IDirectInput8, (void **)&DirectInput, NULL));
+	
+	HR(DirectInput->CreateDevice(GUID_SysKeyboard, &DIKeyboard, NULL));
+	HR(DirectInput->CreateDevice(GUID_SysMouse, &DIMouse, NULL));
+
+	HR(DIKeyboard->SetDataFormat(&c_dfDIKeyboard));
+	HR(DIKeyboard->SetCooperativeLevel(WindowHandle, DISCL_FOREGROUND | DISCL_NONEXCLUSIVE));
+
+	HR(DIMouse->SetDataFormat(&c_dfDIMouse));
+	HR(DIMouse->SetCooperativeLevel(WindowHandle, DISCL_EXCLUSIVE | DISCL_NOWINKEY | DISCL_FOREGROUND));
+
+	return true;
+}
+
+void DetectInput(double time)
+{
+	DIMOUSESTATE MouseCurrentState;
+	BYTE KeyboardState[256];
+
+	DIKeyboard->Acquire();
+	DIMouse->Acquire();
+
+	DIMouse->GetDeviceState(sizeof(DIMOUSESTATE), &MouseCurrentState);
+	DIKeyboard->GetDeviceState(sizeof(KeyboardState), (LPVOID)&KeyboardState);
+
+	if (KeyboardState[DIK_ESCAPE] & 0x80)
+		PostMessage(WindowHandle, WM_DESTROY, 0, 0);
+
+	if (KeyboardState[DIK_LEFT] & 0x80)
+		RotZ -= 1.0f * time;
+	if (KeyboardState[DIK_RIGHT] & 0x80)
+		RotZ += 1.0f * time;
+	if (KeyboardState[DIK_UP] & 0x80)
+		RotX += 1.0f * time;
+	if (KeyboardState[DIK_DOWN] & 0x80)
+		RotX -= 1.0f * time;
+
+	if (MouseCurrentState.lX != MouseLastState.lX)
+		ScaleX -= (MouseCurrentState.lX * 0.001f);
+	if (MouseCurrentState.lY != MouseLastState.lY)
+		ScaleY -= (MouseCurrentState.lY * 0.001f);
+
+	if (RotX > 6.28) RotX -= 6.28;
+	else if (RotX < 0) RotX = 6.28 + RotX;
+
+	if (RotZ > 6.28) RotZ -= 6.28;
+	else if (RotZ < 0) RotZ = 6.28 + RotZ;
+
+	MouseLastState = MouseCurrentState;
+	return;
 }
 
 LRESULT CALLBACK WindowProcedure(HWND Window, UINT Msg, WPARAM WParam, LPARAM LParam)
@@ -529,6 +610,10 @@ void ReleaseObjects()
 	D2DTexture->Release();
 
 	cbPerFrameBuffer->Release();
+
+	DIKeyboard->Unacquire();
+	DIMouse->Unacquire();
+	DirectInput->Release();
 }
 
 bool InitScene()
@@ -757,22 +842,26 @@ void UpdateScene(double time)
 
 	Cube1World = XMMatrixIdentity();
 
-	// Cube1 World Space Matrix
-	XMVECTOR rotAxis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-	Rotation = XMMatrixRotationAxis(rotAxis, Rot);
+	XMVECTOR RotYAxis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+	XMVECTOR RotZAxis = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+	XMVECTOR RotXAxis = XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f);
+
+	Rotation = XMMatrixRotationAxis(RotYAxis, Rot);
+	RotationX = XMMatrixRotationAxis(RotXAxis, RotX);
+	RotationZ = XMMatrixRotationAxis(RotZAxis, RotZ);
 	Translation = XMMatrixTranslation(0.0f, 0.0f, 4.0f);
-	Cube1World = Translation * Rotation;
+
+	Cube1World = Translation * Rotation * RotationX * RotationZ;
 
 	XMVECTOR LightVector = XMVectorZero();
 	LightVector = XMVector3TransformCoord(LightVector, Cube1World);
-
 	light.pos.x = XMVectorGetX(LightVector);
 	light.pos.y = XMVectorGetY(LightVector);
 	light.pos.z = XMVectorGetZ(LightVector);
 
 	Cube2World = XMMatrixIdentity();
-	Rotation = XMMatrixRotationAxis(rotAxis, -Rot);
-	Scale = XMMatrixScaling(1.3f, 1.3f, 1.3f);
+	Rotation = XMMatrixRotationAxis(RotYAxis, -Rot);
+	Scale = XMMatrixScaling(ScaleX, ScaleY, 1.3f);
 	Cube2World = Rotation * Scale;
 }
 
